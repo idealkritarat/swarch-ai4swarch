@@ -33,10 +33,10 @@ requirement: <paste R-12 here>
 
 | Criterion | Run a | Run b |
 |---|---|---|
-| Uses the scenario's numbers (latency, peak, MailFast limits)? | | |
-| Options considered (list them) | | |
-| Handles "exactly once" loyalty points and MailFast's rate limit? How? | | |
-| Anything invented (a number, tool or fact not in the scenario)? | | |
+| Uses the scenario's numbers (latency, peak, MailFast limits)? | No, it never saw them. It says latency and volume targets are "not given" and lists them as open questions | Yes, all of them: 500 ms p95 (today 300), 200 orders/s, MailFast p95 1.5 s / p99 8 s / 0.5 % / 50 per s, loyalty 1 min exactly once. It also worked out the email backlog grows 150/s at peak |
+| Options considered (list them) | A sync fan-out, B pub/sub through a broker (chosen), C post-order orchestrator service. Broker not chosen | 1 sync gRPC chain, 2 in-process goroutines, 3 RabbitMQ events (chosen), 4 Kafka events |
+| Handles "exactly once" loyalty points and MailFast's rate limit? How? | Only in general: idempotent consumers keyed on order ID. Nothing about a rate limit since it didn't know there is one | Loyalty: idempotent consumer, `order_id` unique constraint in the same transaction as the award, ack after commit. MailFast: durable queue buffers the backlog, a global 50/s limiter, retry queue and DLQ. But it admits a failed publish loses the event, so exactly once isn't fully solved |
+| Anything invented (a number, tool or fact not in the scenario)? | Nothing I could find, it marks guesses as [Inferred] and keeps the broker open | Nothing invented. The 150/s backlog is computed from the scenario, and Locust is really in ADR-0001 and `src/loadgenerator` |
 
 ## Take ownership: your final ADR
 
@@ -49,6 +49,8 @@ You will defend this ADR in front of a review board in Part B, so make sure you 
 
 | # | What you changed from the AI's draft | Why |
 |---|---|---|
-| 1 | | |
-| 2 | | |
-| 3 | | |
+| 1 | Added a transactional outbox: `checkoutservice` writes the order and an `OrderPlaced` outbox row to a new small PostgreSQL `checkout-db` in one transaction, and an outbox relay publishes to RabbitMQ | The AI left "publish fails, event lost" as an open question. That breaks exactly once for loyalty, which is a hard requirement, so I made the call instead of leaving it open |
+| 2 | Email consumer is a single active consumer sending at most 45/s, not "global 50/s" | One consumer means one rate limiter. 45 keeps some room under MailFast's 50/s for retries |
+| 3 | Picked PostgreSQL for `loyalty-db` (was "Not decided") | The idempotent award needs a unique constraint and a transaction, and it's open source and self-hosted like the company wants |
+| 4 | Diagram: added `frontend` and the outbox pieces, customer now goes through frontend | The AI drew the customer calling checkout directly, which isn't how the system works |
+| 5 | Fraud check before confirmation moved to "not in scope, own ADR", removed open questions the outbox already answers, set myself as decider | Keeps the ADR focused on post-order actions only |
